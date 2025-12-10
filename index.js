@@ -11,6 +11,7 @@ import {
     substituteParams,
     saveSettingsDebounced,
     getCurrentChatId,
+    generateQuiet, // ✅ 已修复：从核心 script.js 导入生成函数
 } from '../../../../script.js';
 
 import {
@@ -19,9 +20,7 @@ import {
     renderExtensionTemplateAsync,
 } from '../../../extensions.js';
 
-import { 
-    generateQuietPrompt 
-} from '../../../generation.js';
+// ❌ 已删除：错误的 generation.js 引用
 
 const MODULE_NAME = 'chat-summarizer';
 const UPDATE_INTERVAL = 1000;
@@ -65,7 +64,7 @@ async function init() {
         Object.assign(settings, extension_settings[MODULE_NAME]);
         
         // 加载UI
-        const template = await renderExtensionTemplateAsync('third-party/chat-summarizer', 'settings');
+        const template = await renderExtensionTemplateAsync('third-party/Chat-Summarizer', 'settings'); // 注意：这里的路径名建议和文件夹名保持一致，如果是 Chat-Summarizer
         $('#extensions_settings2').append(template);
         
         // 绑定事件
@@ -164,9 +163,9 @@ function updateUI() {
     const chatId = getCurrentChatId();
     const hasSummary = chatId && settings.summaries[chatId];
     
-    $('#summarizer_view').toggle(hasSummary);
-    $('#summarizer_clear').toggle(hasSummary);
-    $('#summarizer_export').toggle(hasSummary);
+    $('#summarizer_view').toggle(!!hasSummary);
+    $('#summarizer_clear').toggle(!!hasSummary);
+    $('#summarizer_export').toggle(!!hasSummary);
     
     if (hasSummary) {
         const summary = settings.summaries[chatId];
@@ -313,7 +312,8 @@ async function summarizeBatch(messages, batchNum = 0, totalBatches = 0, isFinal 
         prompt = `以下是多个批次的总结内容,请将它们整合成一个完整、连贯的总结:\n\n${messagesText}\n\n请生成最终的综合总结。`;
     }
     
-    const result = await generateQuietPrompt(prompt);
+    // ✅ 已修复：使用标准的 generateQuiet 函数
+    const result = await generateQuiet(prompt);
     
     return result;
 }
