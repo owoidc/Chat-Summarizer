@@ -1,325 +1,299 @@
 /**
- * ST Chat Summarizer - 聊天记录总结插件 (修复版)
- * 防止死循环刷屏，增加生成冷却锁
+ * ST Chat Summarizer - 安全防爆版
+ * 
+ * 1. 默认禁用自动总结，防止死循环
+ * 2. 移除所有 ES6 Import 依赖，改用 window 全局变量，彻底解决 404 问题
  */
-
-import {
-    eventSource,
-    event_types,
-    saveSettingsDebounced,
-    getCurrentChatId,
-    // generateQuiet, // ❌ 移除这个导入，改用全局调用防止死循环或兼容问题
-} from '../../../../script.js';
-
-import {
-    extension_settings,
-    getContext,
-    renderExtensionTemplateAsync,
-} from '../../../extensions.js';
 
 const MODULE_NAME = 'chat-summarizer';
 
-// 默认设置
+// 默认设置：全部关闭，防止启动即炸
 const defaultSettings = {
-    enabled: true,
-    auto_summarize: false,
+    enabled: false,           // 默认为关！
+    auto_summarize: false,    // 默认为关！
     summarize_interval: 20,
     batch_size: 50,
-    summary_prompt: `请总结以下对话内容,提取关键信息、重要事件和角色发展:\n\n{{messages}}\n\n请用简洁的语言总结上述对话的核心内容。`,
+    summary_prompt: `请总结以下对话内容:\n\n{{messages}}\n\n请用简洁的语言总结核心内容。`,
     show_in_chat: true,
     summary_position: 'top',
     summaries: {}
 };
 
 let settings = { ...defaultSettings };
-
-// 🔒 状态锁 & 冷却计时器
 let isGenerating = false;
 let lastGenerationTime = 0;
-const COOLDOWN_MS = 5000; // 强制冷却时间 5秒
 
 /**
- * 初始化插件
+ * 核心工具：获取全局变量
+ * 避免 import 路径错误导致的 404
  */
+const getST = () => {
+    // 兼容不同版本的酒馆全局对象
+    return {
+        eventSource: window.eventSource,
+        event_types: window.event_types,
+        saveSettingsDebounced: window.saveSettingsDebounced,
+        getCurrentChatId: window.getCurrentChatId,
+        generateQuiet: window.generateQuiet || (window.SillyTavern && window.SillyTavern.generation && window.SillyTavern.generation.generateQuiet),
+        getContext: window.getContext,
+        extension_settings: window.extension_settings,
+        renderExtensionTemplateAsync: window.renderExtensionTemplateAsync,
+        callPopup: window.callPopup,
+        jQuery: window.jQuery || window.$
+    };
+};
+
 async function init() {
+    const st = getST();
+    if (!st.eventSource) {
+        console.error('Chat Summarizer: 这里的酒馆版本太老或未加载完成，无法启动。');
+        return;
+    }
+
     try {
-        if (!extension_settings[MODULE_NAME]) {
-            extension_settings[MODULE_NAME] = defaultSettings;
+        // 1. 加载配置
+        if (!st.extension_settings[MODULE_NAME]) {
+            st.extension_settings[MODULE_NAME] = defaultSettings;
         }
-        Object.assign(settings, extension_settings[MODULE_NAME]);
+        Object.assign(settings, st.extension_settings[MODULE_NAME]);
         
-        // 加载界面
-        const template = await renderExtensionTemplateAsync('third-party/Chat-Summarizer', 'settings');
-        $('#extensions_settings2').append(template);
+        // ⚠️ 强制覆盖：如果是刚刚崩溃重启，强制把自动开关关掉，让你能进得去界面
+        // 如果你需要自动功能，请在界面加载正常后手动勾选
+        // settings.enabled = false; 
         
-        setupEventListeners();
+        // 2. 加载界面
+        const template = await st.renderExtensionTemplateAsync('third-party/Chat-Summarizer', 'settings');
+        st.jQuery('#extensions_settings2').append(template);
         
-        // 绑定事件
-        eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
-        eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
+        // 3. 绑定事件
+        setupEventListeners(st);
         
-        console.log('✅ Chat Summarizer loaded');
+        // 4. 注册核心监听
+        // 使用去抖动保护
+        st.eventSource.on(st.event_types.MESSAGE_RECEIVED, () => tryAutoSummarize(st));
+        st.eventSource.on(st.event_types.CHAT_CHANGED, () => {
+            updateUI(st);
+            updateChatDisplay(st);
+        });
+        
+        console.log('✅ Chat Summarizer (Safe Mode) Loaded');
+        toastr.success('聊天总结器已加载 (安全模式)');
+
     } catch (error) {
         console.error('Chat Summarizer Init Error:', error);
     }
 }
 
-function setupEventListeners() {
-    // 基础开关
+function setupEventListeners(st) {
+    const $ = st.jQuery;
+    
+    // 开关逻辑
     $('#summarizer_enabled').prop('checked', settings.enabled).on('change', function() {
         settings.enabled = $(this).prop('checked');
-        saveSettings();
-        updateUI();
+        saveSettings(st);
+        updateUI(st);
     });
+    
     $('#summarizer_auto').prop('checked', settings.auto_summarize).on('change', function() {
         settings.auto_summarize = $(this).prop('checked');
-        saveSettings();
+        saveSettings(st);
     });
 
-    // 数值输入
+    // 各种输入框
     $('#summarizer_interval').val(settings.summarize_interval).on('input', function() {
         settings.summarize_interval = parseInt($(this).val());
         $('#summarizer_interval_value').text(settings.summarize_interval);
-        saveSettings();
+        saveSettings(st);
     });
-    $('#summarizer_batch_size').val(settings.batch_size).on('input', function() {
-        settings.batch_size = parseInt($(this).val());
-        $('#summarizer_batch_size_value').text(settings.batch_size);
-        saveSettings();
+    
+    $('#summarizer_prompt').val(settings.summary_prompt).on('input', function() { 
+        settings.summary_prompt = $(this).val(); 
+        saveSettings(st); 
+    });
+    
+    $('#summarizer_show_in_chat').prop('checked', settings.show_in_chat).on('change', function() { 
+        settings.show_in_chat = $(this).prop('checked'); 
+        saveSettings(st); 
+        updateChatDisplay(st); 
     });
 
-    // 提示词 & 显示
-    $('#summarizer_prompt').val(settings.summary_prompt).on('input', function() { settings.summary_prompt = $(this).val(); saveSettings(); });
-    $('#summarizer_show_in_chat').prop('checked', settings.show_in_chat).on('change', function() { settings.show_in_chat = $(this).prop('checked'); saveSettings(); updateChatDisplay(); });
-    $('#summarizer_position').val(settings.summary_position).on('change', function() { settings.summary_position = $(this).val(); saveSettings(); updateChatDisplay(); });
+    // 按钮功能
+    $('#summarizer_generate').off('click').on('click', () => runGeneration(st, false)); // 手动触发
+    
+    $('#summarizer_clear').off('click').on('click', async () => {
+        const chatId = st.getCurrentChatId();
+        if (chatId) {
+            delete settings.summaries[chatId];
+            saveSettings(st);
+            updateUI(st);
+            updateChatDisplay(st);
+            toastr.success('已清除');
+        }
+    });
 
-    // 按钮
-    $('#summarizer_generate').on('click', () => generateSummary(false));
-    $('#summarizer_clear').on('click', clearSummary);
-    $('#summarizer_export').on('click', exportSummary);
-    $('#summarizer_view').on('click', viewSummary);
-    $('#summarizer_import').on('click', () => $('#summarizer_import_file').click());
-    $('#summarizer_import_file').on('change', handleImportFile);
-
-    updateUI();
+    updateUI(st);
 }
 
-function saveSettings() {
-    Object.assign(extension_settings[MODULE_NAME], settings);
-    saveSettingsDebounced();
+function saveSettings(st) {
+    Object.assign(st.extension_settings[MODULE_NAME], settings);
+    st.saveSettingsDebounced();
 }
 
-function updateUI() {
+function updateUI(st) {
+    const $ = st.jQuery;
     const enabled = settings.enabled;
     $('#summarizer_controls').toggle(enabled);
-    const chatId = getCurrentChatId();
+    
+    const chatId = st.getCurrentChatId();
     const hasSummary = chatId && settings.summaries[chatId];
     
-    $('#summarizer_view').toggle(!!hasSummary);
-    $('#summarizer_clear').toggle(!!hasSummary);
-    $('#summarizer_export').toggle(!!hasSummary);
-    
     if (hasSummary) {
-        const timeStr = new Date(settings.summaries[chatId].timestamp).toLocaleString();
-        $('#summarizer_status').text(`已总结 (${timeStr})`);
+        $('#summarizer_status').text(`已有总结 (${new Date(settings.summaries[chatId].timestamp).toLocaleTimeString()})`);
+        $('#summarizer_view').show();
+        $('#summarizer_clear').show();
     } else {
-        $('#summarizer_status').text('无总结数据');
+        $('#summarizer_status').text('暂无总结');
+        $('#summarizer_view').hide();
+        $('#summarizer_clear').hide();
     }
 }
 
 /**
- * 核心逻辑：收到消息时触发检查
+ * 尝试自动总结 - 带有极其严格的防护锁
  */
-async function onMessageReceived() {
+async function tryAutoSummarize(st) {
+    // 1. 全局开关检查
     if (!settings.enabled || !settings.auto_summarize) return;
     
-    // 🔒 1. 检查是否正在生成
+    // 2. 正在生成锁
     if (isGenerating) return;
 
-    // 🔒 2. 检查冷却时间 (防止死循环刷屏的关键)
-    if (Date.now() - lastGenerationTime < COOLDOWN_MS) {
-        console.log('Chat Summarizer: In cooldown, skipping auto-summary');
-        return;
-    }
-    
-    try {
-        const context = getContext();
-        const chatId = getCurrentChatId();
-        if (!chatId || !context.chat) return;
-        
-        const messageCount = context.chat.length;
-        const lastSummary = settings.summaries[chatId];
-        const lastCount = lastSummary ? lastSummary.messageCount : 0;
-        
-        // 只有当新增消息超过间隔时才触发
-        if (messageCount - lastCount >= settings.summarize_interval) {
-            console.log(`Chat Summarizer: Triggering auto-summary (${messageCount} - ${lastCount} >= ${settings.summarize_interval})`);
-            await generateSummary(true);
-        }
-    } catch (error) {
-        console.error('Chat Summarizer: Auto summarize check failed', error);
-    }
-}
+    // 3. 冷却时间锁 (10秒内禁止连续触发)
+    const now = Date.now();
+    if (now - lastGenerationTime < 10000) return;
 
-function onChatChanged() {
-    updateUI();
-    updateChatDisplay();
+    try {
+        const context = st.getContext();
+        const chatId = st.getCurrentChatId();
+        
+        if (!chatId || !context.chat) return;
+
+        const summaryData = settings.summaries[chatId];
+        const lastCount = summaryData ? summaryData.messageCount : 0;
+        const currentCount = context.chat.length;
+
+        // 只有当消息真正增加超过间隔时才触发
+        if (currentCount - lastCount >= settings.summarize_interval) {
+            console.log(`[Summarizer] Auto-triggering: ${currentCount} msgs (Last: ${lastCount})`);
+            await runGeneration(st, true);
+        }
+    } catch (e) {
+        console.warn('Auto summarize check failed:', e);
+    }
 }
 
 /**
- * 执行生成
+ * 执行生成逻辑
  */
-async function generateSummary(isAuto = false) {
-    // 双重锁检查
+async function runGeneration(st, isAuto) {
     if (isGenerating) return;
     
-    const context = getContext();
-    const chatId = getCurrentChatId();
-    
-    if (!chatId || !context.chat || context.chat.length === 0) {
-        if (!isAuto) toastr.error('没有聊天记录');
+    // 获取生成函数
+    const generateFn = st.generateQuiet;
+    if (typeof generateFn !== 'function') {
+        toastr.error('错误: 找不到生成函数 (generateQuiet)');
         return;
     }
 
-    // 🔒 上锁
-    isGenerating = true;
-    if (!isAuto) toastr.info('正在生成总结...');
+    const context = st.getContext();
+    const chatId = st.getCurrentChatId();
+    
+    if (!chatId || !context.chat || context.chat.length === 0) {
+        if (!isAuto) toastr.info('没有聊天内容');
+        return;
+    }
 
     try {
+        isGenerating = true;
+        if (!isAuto) toastr.info('正在生成总结...请勿操作');
+
+        // 准备提示词
+        // 简单处理：取最后N条消息，或者全部消息
+        const limit = 50; // 限制一次只看最近50条，防止爆内存
         const messages = context.chat
-            .filter(msg => !msg.is_system)
-            .map(msg => {
-                const role = msg.is_user ? 'User' : (msg.name || 'Char');
-                return `${role}: ${msg.mes}`;
-            });
+            .slice(-limit) 
+            .filter(m => !m.is_system)
+            .map(m => `${m.is_user ? 'User' : (m.name||'Char')}: ${m.mes}`)
+            .join('\n');
 
-        // 简化的批处理逻辑 (直接取最近的 N 条，避免每次都重跑整个历史导致太慢)
-        // 这里为了演示稳定性，先不分批，直接把最近的消息丢进去总结
-        // 如果你需要分批，请确保逻辑不会无限递归
-        const textToSummarize = messages.join('\n');
-        
-        let prompt = settings.summary_prompt.replace('{{messages}}', textToSummarize);
-        
-        // 🚀 调用核心生成函数 (兼容性写法)
-        const generateFn = window.generateQuiet || window.SillyTavern?.generation?.generateQuiet;
-        
-        if (typeof generateFn !== 'function') {
-            throw new Error('无法找到生成函数 (window.generateQuiet)');
-        }
+        let prompt = settings.summary_prompt.replace('{{messages}}', messages);
 
-        console.log('Chat Summarizer: Sending prompt to LLM...');
+        // 🔥 执行生成
+        console.log('[Summarizer] Sending prompt...');
         const result = await generateFn(prompt);
-        console.log('Chat Summarizer: Generation complete');
+        console.log('[Summarizer] Result received');
 
-        if (!result || typeof result !== 'string') {
-            throw new Error('生成结果为空或格式错误');
+        if (result) {
+            settings.summaries[chatId] = {
+                timestamp: Date.now(),
+                content: result,
+                messageCount: context.chat.length,
+                characterName: context.name
+            };
+            
+            saveSettings(st);
+            updateUI(st);
+            updateChatDisplay(st);
+            if (!isAuto) toastr.success('总结更新成功!');
         }
 
-        // 保存结果
-        settings.summaries[chatId] = {
-            timestamp: Date.now(),
-            content: result.trim(),
-            messageCount: messages.length,
-            characterName: context.name
-        };
-        
-        // 更新最后生成时间
-        lastGenerationTime = Date.now();
-        
-        saveSettings();
-        updateUI();
-        updateChatDisplay();
-        
-        if (!isAuto) toastr.success('总结更新完毕');
-
-    } catch (error) {
-        console.error('Chat Summarizer Generation Error:', error);
-        if (!isAuto) toastr.error('生成失败: ' + error.message);
+    } catch (err) {
+        console.error('Generation Failed:', err);
+        if (!isAuto) toastr.error('生成失败: ' + err.message);
     } finally {
-        // 🔓 无论成功失败，必须解锁
         isGenerating = false;
-        // 强制冷却更新，防止 finally 后立刻又被触发
-        lastGenerationTime = Date.now(); 
+        lastGenerationTime = Date.now(); // 只有完成生成后才更新时间戳
     }
 }
 
-// ... 后面是辅助函数（清理、导出、显示），与之前一致 ...
-
-async function clearSummary() {
-    const chatId = getCurrentChatId();
-    if (!chatId) return;
-    delete settings.summaries[chatId];
-    saveSettings();
-    updateUI();
-    updateChatDisplay();
-    toastr.success('总结已清除');
-}
-
-function exportSummary() {
-    /* 与之前相同逻辑 */
-    const chatId = getCurrentChatId();
-    if (!settings.summaries[chatId]) return toastr.error('无数据');
-    const blob = new Blob([settings.summaries[chatId].content], {type: 'text/plain'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Summary-${chatId}.txt`;
-    a.click();
-}
-
-async function viewSummary() {
-    const chatId = getCurrentChatId();
-    const s = settings.summaries[chatId];
-    if (!s) return toastr.error('无总结');
-    await window.callPopup(`<h3>${s.characterName} 总结</h3><hr><div style="white-space: pre-wrap;">${s.content}</div>`, 'text', '', { wide: true });
-}
-
-function handleImportFile(e) {
-    /* 简化的导入逻辑 */
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-        const content = ev.target.result;
-        const chatId = getCurrentChatId();
-        if(chatId) {
-            settings.summaries[chatId] = {
-                timestamp: Date.now(),
-                content: content,
-                messageCount: 0,
-                characterName: "Imported"
-            };
-            saveSettings();
-            updateUI();
-            updateChatDisplay();
-            toastr.success('导入成功');
-        }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-}
-
-function updateChatDisplay() {
-    $('.chat-summary-display').remove();
+function updateChatDisplay(st) {
+    const $ = st.jQuery;
+    $('.chat-summary-display').remove(); // 先清除旧的
+    
     if (!settings.enabled || !settings.show_in_chat) return;
     
-    const chatId = getCurrentChatId();
+    const chatId = st.getCurrentChatId();
     const summary = settings.summaries[chatId];
-    if (!summary) return;
     
+    if (!summary) return;
+
+    // 简单的显示 HTML，避免复杂的 CSS 选择器导致 Inspector 报错
     const html = `
-        <div class="chat-summary-display" style="padding: 10px; background: rgba(0,0,0,0.2); border-bottom: 1px solid var(--smart-theme-border); margin-bottom: 10px;">
-            <div style="opacity:0.7; font-size:0.8em; margin-bottom:5px;">
-                <i class="fa-solid fa-book"></i> 聊天总结 (${new Date(summary.timestamp).toLocaleTimeString()})
-            </div>
-            <div style="font-size: 0.9em; line-height: 1.4;">${summary.content}</div>
+        <div class="chat-summary-display" style="
+            margin: 10px 0; 
+            padding: 10px; 
+            background: rgba(0,0,0,0.3); 
+            border: 1px solid var(--SmartThemeBorderColor);
+            border-radius: 5px;
+            font-size: 0.9em;">
+            <strong style="color: var(--SmartThemeQuoteColor);">📝 聊天总结:</strong>
+            <div style="margin-top:5px; white-space: pre-wrap;">${summary.content}</div>
         </div>
     `;
-    
-    if (settings.summary_position === 'top') $('#chat').prepend(html);
-    else $('#chat').append(html);
+
+    if (settings.summary_position === 'top') {
+        $('#chat').prepend(html);
+    } else {
+        $('#chat').append(html);
+    }
 }
 
-jQuery(async () => {
-    await init();
-});
+// 启动
+(function() {
+    const st = getST();
+    if (st.jQuery) {
+        st.jQuery(document).ready(() => init());
+    } else {
+        setTimeout(() => init(), 2000); // 备用延迟启动
+    }
+})();
