@@ -1,0 +1,376 @@
+<div id="chat_summarizer_container">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>📚 聊天记录总结器</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <!-- 主开关 -->
+            <div class="summarizer-section">
+                <label class="checkbox_label" title="启用聊天总结功能">
+                    <input type="checkbox" id="summarizer_enabled">
+                    <span><strong>启用聊天总结</strong></span>
+                </label>
+            </div>
+
+            <div id="summarizer_controls" style="display: none;">
+                <!-- 状态显示 -->
+                <div class="summarizer-section">
+                    <div class="summarizer-status-box">
+                        <i class="fa-solid fa-info-circle"></i>
+                        <span id="summarizer_status">暂无总结</span>
+                    </div>
+                </div>
+
+                <!-- 自动总结设置 -->
+                <div class="summarizer-section">
+                    <h4><i class="fa-solid fa-magic"></i> 自动总结</h4>
+                    
+                    <label class="checkbox_label" title="收到新消息时自动触发总结">
+                        <input type="checkbox" id="summarizer_auto">
+                        <span>自动生成总结</span>
+                    </label>
+
+                    <div class="range-block">
+                        <label for="summarizer_interval">
+                            总结间隔 (消息数): 
+                            <span id="summarizer_interval_value">20</span>
+                        </label>
+                        <input type="range" id="summarizer_interval" 
+                               min="5" max="100" step="5" value="20" 
+                               class="range-slider">
+                        <small class="help-text">每隔N条新消息自动生成一次总结</small>
+                    </div>
+
+                    <div class="range-block">
+                        <label for="summarizer_batch_size">
+                            批次大小 (消息数): 
+                            <span id="summarizer_batch_size_value">50</span>
+                        </label>
+                        <input type="range" id="summarizer_batch_size" 
+                               min="20" max="200" step="10" value="50" 
+                               class="range-slider">
+                        <small class="help-text">长对话将分批处理,每批包含N条消息</small>
+                    </div>
+                </div>
+
+                <!-- 显示设置 -->
+                <div class="summarizer-section">
+                    <h4><i class="fa-solid fa-eye"></i> 显示设置</h4>
+                    
+                    <label class="checkbox_label" title="在聊天界面显示总结内容">
+                        <input type="checkbox" id="summarizer_show_in_chat">
+                        <span>在聊天中显示总结</span>
+                    </label>
+
+                    <div class="flex-container alignitemscenter">
+                        <label for="summarizer_position">显示位置:</label>
+                        <select id="summarizer_position" class="flex1">
+                            <option value="top">顶部</option>
+                            <option value="bottom">底部</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- 自定义提示词 -->
+                <div class="summarizer-section">
+                    <h4><i class="fa-solid fa-pen"></i> 总结提示词</h4>
+                    <small class="help-text">
+                        使用 <code>{{messages}}</code> 作为消息内容的占位符
+                    </small>
+                    <textarea id="summarizer_prompt" 
+                              class="text_pole textarea_compact" 
+                              rows="8" 
+                              placeholder="输入自定义总结提示词..."></textarea>
+                    
+                    <details class="margin-bot-10px">
+                        <summary>提示词示例</summary>
+                        <div class="example-prompts">
+                            <p><strong>简洁版:</strong></p>
+                            <pre>请用3-5句话总结以下对话的核心内容:
+
+{{messages}}</pre>
+                            
+                            <p><strong>详细版:</strong></p>
+                            <pre>请详细总结以下对话,包括:
+1. 主要讨论的话题
+2. 重要的事件和转折
+3. 角色的情感变化
+4. 未解决的问题
+
+{{messages}}</pre>
+                            
+                            <p><strong>结构化版:</strong></p>
+                            <pre>分析以下对话并生成结构化总结:
+
+【背景】简述对话背景
+【关键事件】列出重要事件(时间顺序)
+【角色发展】描述主要角色的状态变化
+【待办事项】提取未完成的任务或承诺
+【总结】一句话概括
+
+{{messages}}</pre>
+                        </div>
+                    </details>
+                </div>
+
+                <!-- 操作按钮 -->
+                <div class="summarizer-section">
+                    <h4><i class="fa-solid fa-tools"></i> 操作</h4>
+                    
+                    <div class="summarizer-actions">
+                        <button id="summarizer_generate" 
+                                class="menu_button" 
+                                title="立即生成当前聊天的总结">
+                            <i class="fa-solid fa-play"></i> 生成总结
+                        </button>
+                        
+                        <button id="summarizer_view" 
+                                class="menu_button" 
+                                title="查看当前总结内容"
+                                style="display: none;">
+                            <i class="fa-solid fa-eye"></i> 查看总结
+                        </button>
+                        
+                        <button id="summarizer_import" 
+                                class="menu_button" 
+                                title="从文件导入总结">
+                            <i class="fa-solid fa-upload"></i> 导入总结
+                        </button>
+                        
+                        <button id="summarizer_export" 
+                                class="menu_button" 
+                                title="导出总结为文本文件"
+                                style="display: none;">
+                            <i class="fa-solid fa-download"></i> 导出总结
+                        </button>
+                        
+                        <button id="summarizer_clear" 
+                                class="menu_button menu_button_icon" 
+                                title="清除当前聊天的总结"
+                                style="display: none;">
+                            <i class="fa-solid fa-trash"></i> 清除
+                        </button>
+                    </div>
+                    
+                    <!-- 隐藏的文件输入 -->
+                    <input type="file" 
+                           id="summarizer_import_file" 
+                           accept=".txt,.md" 
+                           style="display: none;">
+                </div>
+
+                <!-- 使用说明 -->
+                <div class="summarizer-section">
+                    <details>
+                        <summary><i class="fa-solid fa-question-circle"></i> 使用说明</summary>
+                        <div class="summarizer-help">
+                            <h5>功能说明</h5>
+                            <ul>
+                                <li><strong>生成总结:</strong> 点击"生成总结"按钮,立即对当前聊天记录生成总结</li>
+                                <li><strong>自动总结:</strong> 启用后,每当新消息数达到设定间隔时自动生成总结</li>
+                                <li><strong>分批处理:</strong> 对于长对话,插件会自动分批总结再汇总,提高准确性</li>
+                                <li><strong>导入总结:</strong> 可以导入之前导出的总结文件,支持多种格式</li>
+                                <li><strong>导出总结:</strong> 导出的文件包含完整元数据,方便后续导入</li>
+                                <li><strong>聊天显示:</strong> 可选择在聊天界面顶部或底部显示总结内容</li>
+                            </ul>
+
+                            <h5>导入/导出</h5>
+                            <ul>
+                                <li><strong>导出格式:</strong> 导出的文件包含角色名、时间戳、消息数等元数据</li>
+                                <li><strong>导入兼容:</strong> 支持导入本插件导出的文件,也尝试兼容其他格式</li>
+                                <li><strong>覆盖提醒:</strong> 导入前会提示是否覆盖现有总结</li>
+                                <li><strong>纯文本也可:</strong> 即使是纯文本文件也能尝试导入</li>
+                            </ul>
+
+                            <h5>最佳实践</h5>
+                            <ul>
+                                <li>建议每20-50条消息生成一次总结</li>
+                                <li>使用自定义提示词获得符合需求的总结格式</li>
+                                <li>定期导出总结,避免数据丢失</li>
+                                <li>总结内容会随聊天文件自动保存</li>
+                                <li>可以在不同聊天间导入导出总结</li>
+                            </ul>
+
+                            <h5>技巧</h5>
+                            <ul>
+                                <li>💡 对于RPG游戏,可以用"事件日志"风格的提示词</li>
+                                <li>💡 对于学习对话,可以用"知识要点"风格的提示词</li>
+                                <li>💡 对于故事创作,可以用"剧情大纲"风格的提示词</li>
+                                <li>💡 导出的总结可以作为角色卡的补充说明</li>
+                            </ul>
+                        </div>
+                    </details>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.summarizer-section {
+    margin-bottom: 1rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+
+.summarizer-section:last-child {
+    border-bottom: none;
+}
+
+.summarizer-section h4 {
+    margin: 0 0 0.5rem 0;
+    color: var(--SmartThemeQuoteColor);
+    font-size: 1em;
+}
+
+.summarizer-status-box {
+    padding: 0.75rem;
+    background: var(--SmartThemeBlurTintColor);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.summarizer-status-box i {
+    color: var(--SmartThemeQuoteColor);
+}
+
+.range-block {
+    margin-top: 0.75rem;
+}
+
+.range-block label {
+    display: block;
+    margin-bottom: 0.25rem;
+}
+
+.range-slider {
+    width: 100%;
+    margin: 0.5rem 0;
+}
+
+.help-text {
+    display: block;
+    color: var(--SmartThemeEmColor);
+    font-size: 0.9em;
+    margin-top: 0.25rem;
+}
+
+.summarizer-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+}
+
+.summarizer-actions button {
+    width: 100%;
+}
+
+.example-prompts {
+    margin-top: 0.5rem;
+    padding: 0.75rem;
+    background: var(--black10a);
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+
+.example-prompts p {
+    margin: 0.5rem 0 0.25rem 0;
+}
+
+.example-prompts pre {
+    background: var(--black20a);
+    padding: 0.5rem;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    margin: 0.25rem 0 0.75rem 0;
+}
+
+.summarizer-help {
+    padding: 0.75rem;
+    background: var(--SmartThemeBlurTintColor);
+    border-radius: 6px;
+    margin-top: 0.5rem;
+}
+
+.summarizer-help h5 {
+    margin: 0.5rem 0;
+    color: var(--SmartThemeQuoteColor);
+}
+
+.summarizer-help ul {
+    margin: 0.5rem 0;
+    padding-left: 1.5rem;
+}
+
+.summarizer-help li {
+    margin: 0.25rem 0;
+}
+
+/* 聊天界面中的总结显示 */
+.chat-summary-display {
+    margin: 1rem 0;
+    padding: 1rem;
+    background: linear-gradient(135deg, 
+        var(--SmartThemeBlurTintColor) 0%, 
+        var(--black10a) 100%);
+    border-left: 4px solid var(--SmartThemeQuoteColor);
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.chat-summary-display .summary-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    color: var(--SmartThemeQuoteColor);
+    font-size: 1.1em;
+}
+
+.chat-summary-display .summary-info {
+    font-size: 0.85em;
+    color: var(--SmartThemeEmColor);
+    margin-left: auto;
+}
+
+.chat-summary-display .summary-body {
+    padding: 0.75rem;
+    background: var(--black10a);
+    border-radius: 6px;
+    line-height: 1.6;
+    margin-bottom: 0.5rem;
+}
+
+.chat-summary-display .summary-footer {
+    text-align: right;
+    color: var(--SmartThemeEmColor);
+    font-size: 0.85em;
+}
+
+/* 查看总结弹窗样式 */
+.summary-viewer {
+    padding: 1rem;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.summary-viewer .summary-header {
+    padding: 0.75rem;
+    background: var(--SmartThemeBlurTintColor);
+    border-radius: 6px;
+    margin-bottom: 1rem;
+}
+
+.summary-viewer .summary-content {
+    padding: 1rem;
+    background: var(--black10a);
+    border-radius: 6px;
+    line-height: 1.8;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+</style>

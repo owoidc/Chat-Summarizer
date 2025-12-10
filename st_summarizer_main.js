@@ -138,6 +138,10 @@ function setupEventListeners() {
     $('#summarizer_clear').on('click', clearSummary);
     $('#summarizer_export').on('click', exportSummary);
     $('#summarizer_view').on('click', viewSummary);
+    $('#summarizer_import').on('click', () => $('#summarizer_import_file').click());
+    
+    // 文件导入
+    $('#summarizer_import_file').on('change', handleImportFile);
 }
 
 /**

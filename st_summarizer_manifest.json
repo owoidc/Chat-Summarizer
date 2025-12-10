@@ -1,0 +1,12 @@
+{
+  "display_name": "Chat Summarizer - 聊天总结器",
+  "loading_order": 10,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Extracted from ST-Memory-Context by gaigai315",
+  "version": "1.0.0",
+  "homePage": "https://github.com/yourusername/chat-summarizer",
+  "description": "自动或手动生成聊天记录的智能总结。支持长对话分批处理、自定义提示词、总结导出等功能。从 ST-Memory-Context 插件中提取的纯净总结功能。"
+}
