@@ -1,12 +1,6 @@
 /**
  * ST Chat Summarizer - 聊天记录总结插件
  * 提取自 ST-Memory-Context,专注于聊天记录总结功能
- * 
- * 核心功能:
- * 1. 自动/手动生成聊天记录总结
- * 2. 分批总结长对话
- * 3. 支持自定义总结提示词
- * 4. 总结结果可保存和导出
  */
 
 import {
@@ -38,8 +32,8 @@ const defaultSettings = {
     
     // 总结设置
     auto_summarize: false,
-    summarize_interval: 20,  // 每20条消息自动总结一次
-    batch_size: 50,          // 每批处理50条消息
+    summarize_interval: 20,
+    batch_size: 50,
     
     // 提示词设置
     summary_prompt: `请总结以下对话内容,提取关键信息、重要事件和角色发展:
@@ -50,10 +44,10 @@ const defaultSettings = {
     
     // 显示设置
     show_in_chat: true,
-    summary_position: 'top',  // top 或 bottom
+    summary_position: 'top',
     
     // 存储
-    summaries: {}  // { chatId: { timestamp, content, messageCount } }
+    summaries: {}
 };
 
 let settings = { ...defaultSettings };
@@ -63,24 +57,29 @@ let isGenerating = false;
  * 初始化插件
  */
 async function init() {
-    // 加载设置
-    if (!extension_settings[MODULE_NAME]) {
-        extension_settings[MODULE_NAME] = defaultSettings;
+    try {
+        // 加载设置
+        if (!extension_settings[MODULE_NAME]) {
+            extension_settings[MODULE_NAME] = defaultSettings;
+        }
+        Object.assign(settings, extension_settings[MODULE_NAME]);
+        
+        // 加载UI
+        const template = await renderExtensionTemplateAsync('third-party/chat-summarizer', 'settings');
+        $('#extensions_settings2').append(template);
+        
+        // 绑定事件
+        setupEventListeners();
+        
+        // 注册聊天事件
+        eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
+        eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
+        
+        console.log('Chat Summarizer: Plugin initialized successfully');
+    } catch (error) {
+        console.error('Chat Summarizer: Initialization failed', error);
+        toastr.error('聊天总结器初始化失败: ' + error.message);
     }
-    Object.assign(settings, extension_settings[MODULE_NAME]);
-    
-    // 加载UI
-    const template = await renderExtensionTemplateAsync('third-party/chat-summarizer', 'settings');
-    $('#extensions_settings2').append(template);
-    
-    // 绑定事件
-    setupEventListeners();
-    
-    // 注册聊天事件
-    eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
-    eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
-    
-    console.log('Chat Summarizer initialized');
 }
 
 /**
@@ -134,7 +133,7 @@ function setupEventListeners() {
     });
     
     // 操作按钮
-    $('#summarizer_generate').on('click', generateSummary);
+    $('#summarizer_generate').on('click', () => generateSummary(false));
     $('#summarizer_clear').on('click', clearSummary);
     $('#summarizer_export').on('click', exportSummary);
     $('#summarizer_view').on('click', viewSummary);
@@ -142,6 +141,9 @@ function setupEventListeners() {
     
     // 文件导入
     $('#summarizer_import_file').on('change', handleImportFile);
+    
+    // 初始化UI状态
+    updateUI();
 }
 
 /**
@@ -168,9 +170,8 @@ function updateUI() {
     
     if (hasSummary) {
         const summary = settings.summaries[chatId];
-        $('#summarizer_status').text(
-            `最后总结: ${new Date(summary.timestamp).toLocaleString()} (${summary.messageCount}条消息)`
-        );
+        const timeStr = new Date(summary.timestamp).toLocaleString();
+        $('#summarizer_status').text(`最后总结: ${timeStr} (${summary.messageCount}条消息)`);
     } else {
         $('#summarizer_status').text('暂无总结');
     }
@@ -182,17 +183,20 @@ function updateUI() {
 async function onMessageReceived() {
     if (!settings.enabled || !settings.auto_summarize) return;
     
-    const context = getContext();
-    const chatId = getCurrentChatId();
-    if (!chatId || !context.chat) return;
-    
-    // 检查是否需要自动总结
-    const messageCount = context.chat.length;
-    const lastSummary = settings.summaries[chatId];
-    const lastCount = lastSummary ? lastSummary.messageCount : 0;
-    
-    if (messageCount - lastCount >= settings.summarize_interval) {
-        await generateSummary(true);
+    try {
+        const context = getContext();
+        const chatId = getCurrentChatId();
+        if (!chatId || !context.chat) return;
+        
+        const messageCount = context.chat.length;
+        const lastSummary = settings.summaries[chatId];
+        const lastCount = lastSummary ? lastSummary.messageCount : 0;
+        
+        if (messageCount - lastCount >= settings.summarize_interval) {
+            await generateSummary(true);
+        }
+    } catch (error) {
+        console.error('Chat Summarizer: Auto summarize failed', error);
     }
 }
 
@@ -209,7 +213,7 @@ function onChatChanged() {
  */
 async function generateSummary(isAuto = false) {
     if (isGenerating) {
-        toastr.warning('正在生成总结,请稍候...');
+        if (!isAuto) toastr.warning('正在生成总结,请稍候...');
         return;
     }
     
@@ -217,7 +221,7 @@ async function generateSummary(isAuto = false) {
     const chatId = getCurrentChatId();
     
     if (!chatId || !context.chat || context.chat.length === 0) {
-        toastr.error('当前没有可总结的聊天记录');
+        if (!isAuto) toastr.error('当前没有可总结的聊天记录');
         return;
     }
     
@@ -236,6 +240,11 @@ async function generateSummary(isAuto = false) {
                 return `${role}: ${msg.mes}`;
             });
         
+        if (messages.length === 0) {
+            if (!isAuto) toastr.warning('没有可总结的消息');
+            return;
+        }
+        
         // 分批处理
         const batches = [];
         for (let i = 0; i < messages.length; i += settings.batch_size) {
@@ -245,10 +254,8 @@ async function generateSummary(isAuto = false) {
         let finalSummary = '';
         
         if (batches.length === 1) {
-            // 单批次直接总结
             finalSummary = await summarizeBatch(batches[0]);
         } else {
-            // 多批次:先分别总结,再汇总
             const batchSummaries = [];
             
             for (let i = 0; i < batches.length; i++) {
@@ -256,7 +263,6 @@ async function generateSummary(isAuto = false) {
                 batchSummaries.push(batchSummary);
             }
             
-            // 汇总所有批次
             finalSummary = await summarizeBatch(
                 batchSummaries.map((s, i) => `[第${i + 1}批次总结]\n${s}`),
                 0,
@@ -282,8 +288,10 @@ async function generateSummary(isAuto = false) {
         }
         
     } catch (error) {
-        console.error('生成总结失败:', error);
-        toastr.error('生成总结失败: ' + error.message);
+        console.error('Chat Summarizer: Generate summary failed', error);
+        if (!isAuto) {
+            toastr.error('生成总结失败: ' + error.message);
+        }
     } finally {
         isGenerating = false;
     }
@@ -305,7 +313,6 @@ async function summarizeBatch(messages, batchNum = 0, totalBatches = 0, isFinal 
         prompt = `以下是多个批次的总结内容,请将它们整合成一个完整、连贯的总结:\n\n${messagesText}\n\n请生成最终的综合总结。`;
     }
     
-    // 使用 quiet 模式生成(不会显示在聊天中)
     const result = await generateQuietPrompt(prompt);
     
     return result;
@@ -344,15 +351,18 @@ function exportSummary() {
     const context = getContext();
     const fileName = `Summary_${context.name || 'Chat'}_${new Date().toISOString().split('T')[0]}.txt`;
     
-    const content = `聊天总结
-角色: ${summary.characterName || '未知'}
-生成时间: ${new Date(summary.timestamp).toLocaleString()}
-消息数量: ${summary.messageCount}
+    const content = `=== CHAT SUMMARY ===
+CHARACTER: ${summary.characterName || '未知'}
+CHAT_ID: ${chatId}
+TIMESTAMP: ${summary.timestamp}
+MESSAGE_COUNT: ${summary.messageCount}
+GENERATED_AT: ${new Date(summary.timestamp).toISOString()}
 
-=== 总结内容 ===
+=== SUMMARY CONTENT ===
 
 ${summary.content}
-`;
+
+=== END OF SUMMARY ===`;
     
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -365,6 +375,110 @@ ${summary.content}
     URL.revokeObjectURL(url);
     
     toastr.success('总结已导出');
+}
+
+/**
+ * 处理导入文件
+ */
+async function handleImportFile(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    event.target.value = '';
+    
+    try {
+        const text = await file.text();
+        const parsed = parseExportedSummary(text);
+        
+        if (!parsed) {
+            toastr.error('无法识别的文件格式');
+            return;
+        }
+        
+        const chatId = getCurrentChatId();
+        
+        if (!chatId) {
+            toastr.error('请先打开一个聊天');
+            return;
+        }
+        
+        const confirmMsg = `确定要导入总结吗?\n\n` +
+                          `来源角色: ${parsed.characterName || '未知'}\n` +
+                          `生成时间: ${new Date(parsed.timestamp).toLocaleString()}\n` +
+                          `消息数量: ${parsed.messageCount}\n\n` +
+                          `${settings.summaries[chatId] ? '⚠️ 这将覆盖当前聊天的总结' : ''}`;
+        
+        const confirmed = await callPopup(confirmMsg, 'confirm');
+        if (confirmed !== 'true') return;
+        
+        settings.summaries[chatId] = {
+            timestamp: Date.now(),
+            originalTimestamp: parsed.timestamp,
+            content: parsed.content,
+            messageCount: parsed.messageCount,
+            characterName: parsed.characterName,
+            imported: true,
+            importedFrom: file.name
+        };
+        
+        saveSettings();
+        updateUI();
+        updateChatDisplay();
+        
+        toastr.success('总结导入成功!');
+        
+    } catch (error) {
+        console.error('Chat Summarizer: Import failed', error);
+        toastr.error('导入失败: ' + error.message);
+    }
+}
+
+/**
+ * 解析导出的总结文件
+ */
+function parseExportedSummary(text) {
+    try {
+        // 标准格式
+        const characterMatch = text.match(/CHARACTER:\s*(.+)/);
+        const timestampMatch = text.match(/TIMESTAMP:\s*(\d+)/);
+        const messageCountMatch = text.match(/MESSAGE_COUNT:\s*(\d+)/);
+        const contentMatch = text.match(/=== SUMMARY CONTENT ===\s*([\s\S]+?)\s*=== END OF SUMMARY ===/);
+        
+        if (contentMatch) {
+            return {
+                characterName: characterMatch ? characterMatch[1].trim() : '未知',
+                timestamp: timestampMatch ? parseInt(timestampMatch[1]) : Date.now(),
+                messageCount: messageCountMatch ? parseInt(messageCountMatch[1]) : 0,
+                content: contentMatch[1].trim()
+            };
+        }
+        
+        // 旧格式
+        const oldFormatMatch = text.match(/角色:\s*(.+)\s*\n[\s\S]*?=== 总结内容 ===\s*([\s\S]+)/);
+        if (oldFormatMatch) {
+            return {
+                characterName: oldFormatMatch[1].trim(),
+                timestamp: Date.now(),
+                messageCount: 0,
+                content: oldFormatMatch[2].trim()
+            };
+        }
+        
+        // 纯文本
+        if (text.length > 50 && text.length < 50000) {
+            return {
+                characterName: '导入',
+                timestamp: Date.now(),
+                messageCount: 0,
+                content: text.trim()
+            };
+        }
+        
+        return null;
+    } catch (error) {
+        console.error('Chat Summarizer: Parse failed', error);
+        return null;
+    }
 }
 
 /**
@@ -400,7 +514,6 @@ async function viewSummary() {
  * 更新聊天界面显示
  */
 function updateChatDisplay() {
-    // 移除旧的总结显示
     $('.chat-summary-display').remove();
     
     if (!settings.enabled || !settings.show_in_chat) return;
@@ -410,7 +523,6 @@ function updateChatDisplay() {
     
     if (!summary) return;
     
-    // 创建总结显示元素
     const summaryHtml = `
         <div class="chat-summary-display">
             <div class="summary-header">
@@ -427,7 +539,6 @@ function updateChatDisplay() {
         </div>
     `;
     
-    // 插入到聊天界面
     const $chat = $('#chat');
     if (settings.summary_position === 'top') {
         $chat.prepend(summaryHtml);
